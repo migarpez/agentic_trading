@@ -12,6 +12,7 @@ import pandas as pd
 
 from agentic_trading.config import DATA_DIR
 from agentic_trading.data.dataset import (
+    DEFAULT_DATASET,
     HORIZONS,
     WindowData,
     asset_info,
@@ -24,6 +25,19 @@ def main() -> None:
     clean = DATA_DIR / "clean"
     out = DATA_DIR / "dataset"
     universe = pd.read_parquet(DATA_DIR / "universe.parquet")
+    # Sin datos limpios (no descargados o cortados enteros; en el universo actual no hay):
+    have = universe["symbol"].map(lambda s: (clean / f"{s}.parquet").exists())
+    if not have.all():
+        print(f"Sin datos limpios, fuera del dataset: {sorted(universe.loc[~have, 'symbol'])}")
+        universe = universe[have].reset_index(drop=True)
+    # Menos velas que el horizonte máximo (Yahoo da 1 vela de algunos del universo ampliado):
+    # asset_arrays no las admite y no darían muestras. En el universo actual no hay.
+    hmax = max(DEFAULT_DATASET.horizons)
+    short = [s for s in universe["symbol"]
+             if len(pd.read_parquet(clean / f"{s}.parquet", columns=["close"])) < hmax]
+    if short:
+        print(f"Menos de {hmax} velas, fuera del dataset: {short}")
+        universe = universe[~universe["symbol"].isin(short)].reset_index(drop=True)
     meta = build_dataset(universe, lambda s: pd.read_parquet(clean / f"{s}.parquet"), out,
                          clean_dir=clean)
 

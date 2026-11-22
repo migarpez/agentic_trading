@@ -2,7 +2,7 @@
 .venv/
 
 # Datos y artefactos (fuera de git)
-data/
+/data/
 checkpoints/
 logs/
 runs/

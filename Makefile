@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: data universe download audit clean dataset test lint
+.PHONY: data universe download audit clean dataset ext test lint
 
 data: download audit clean  ## pipeline de datos completo, con el universo congelado
 
@@ -18,6 +18,15 @@ clean:  ## limpieza + re-auditoría -> data/clean/
 
 dataset:  ## ventanas y targets -> data/dataset/
 	$(PY) scripts/build_dataset.py
+
+EXT := AGENTIC_TRADING_DATA=data/ext
+
+ext:  ## universo ampliado (medianas y pequeñas, 22-11-2026) -> data/ext/, aparte del actual
+	$(EXT) $(PY) scripts/build_universe.py --ext --exclude data/universe.parquet
+	$(EXT) $(PY) scripts/download_data.py
+	$(EXT) $(PY) scripts/audit_data.py --max-plots 0
+	$(EXT) $(PY) scripts/clean_data.py
+	$(EXT) $(PY) scripts/build_dataset.py
 
 test:
 	.venv/bin/pytest -q
