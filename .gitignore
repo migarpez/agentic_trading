@@ -1,0 +1,27 @@
+# Entorno
+.venv/
+
+# Datos y artefactos (fuera de git)
+data/
+checkpoints/
+logs/
+runs/
+*.parquet
+*.pt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Sistema / editores
+.DS_Store
+.vscode/
+.idea/
