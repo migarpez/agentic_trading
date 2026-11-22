@@ -302,3 +302,24 @@ def test_compare_rule_blocks():
     assert compare_rule(top([1, -1, -1, 1, 1]), std, std)["wins"]
     assert not compare_rule(top([1, 1, 1, 1, 1], t=0.99), std, std)["wins"]
     assert not compare_rule(top([1, 1, 1, 1, 1], mean=0.0, t=5), std, std)["wins"]
+
+
+def test_recency_weights_and_training(tmp_path, rel1):
+    from agentic_trading.model.tcn import joint_loss
+    data, _ = synthetic_data(tmp_path)
+    idx = np.arange(len(data.samples))[::2]
+    w = rel1.recency_weights(data.samples, idx, 2.0)
+    assert np.isnan(np.delete(w, idx)).all()
+    np.testing.assert_allclose(w[idx].mean(), 1.0, rtol=1e-5)
+    d = data.samples["date"].to_numpy()[idx]
+    last, two = d == d.max(), d <= d.max() - np.timedelta64(731, "D")
+    assert w[idx][two].max() <= 0.5 * w[idx][last].min() * 1.001        # 2 años: la mitad o menos
+    torch.manual_seed(0)
+    mu, logv, y = torch.randn(8, 3), torch.randn(8, 3), torch.randn(8, 3)
+    v, m = torch.rand(8, 3) + 0.5, torch.ones(8, 3, dtype=torch.bool)
+    base = joint_loss(mu, logv, y, v, m)
+    one = joint_loss(mu, logv, y, v, m, weight=torch.ones(8))
+    torch.testing.assert_close(base[0], one[0])
+    cfg = rel1.TrainConfig(**{**MU_REF_CONFIG, "epochs": 1, "recency_halflife": 4.0})
+    _model, hist = rel1.train_model(data, idx, cfg, seed=1, log=lambda *_: None)
+    assert np.isfinite(hist[0]["loss"])

@@ -29,6 +29,11 @@ Opciones de mu_tree (22-11-2026), desactivadas por defecto (sin ellas, bit a bit
 - tail_weight = w: en L_μ, peso w para las muestras cuyo target está en el decil alto de su fecha
   (entre las de entrenamiento), normalizado para que el peso medio de cada fecha sea 1
   (WindowData.tail_weights).
+
+Prueba de adaptación (recency, 22-11-2026), desactivada por defecto:
+- recency_halflife = H años: cada muestra de entrenamiento pesa 2^(−antigüedad / H) en L_μ y en
+  L_σ, con la antigüedad desde la última fecha de entrenamiento (la de train_idx) y los pesos
+  normalizados a media 1 entre las muestras de train_idx (recency_weights).
 """
 
 from __future__ import annotations
@@ -64,6 +69,7 @@ class TrainConfig:
     target_rank: bool = False    # L_μ sobre el rango gaussianizado del target en la fecha
     xsec: bool = False           # resumen aprendido del universo (lotes por fecha)
     tail_weight: float | None = None   # peso del decil alto de la fecha en L_μ
+    recency_halflife: float | None = None   # semivida (años) del peso por antigüedad
 
 
 def month_bootstrap(samples: pd.DataFrame, idx: np.ndarray, rng: np.random.Generator,
@@ -79,6 +85,19 @@ def month_bootstrap(samples: pd.DataFrame, idx: np.ndarray, rng: np.random.Gener
     if not return_draw:
         return out
     return out, np.repeat(np.arange(len(pick)), count[pick])
+
+
+def recency_weights(samples: pd.DataFrame, train_idx: np.ndarray,
+                    halflife: float) -> np.ndarray:
+    """Peso 2^(−antigüedad / halflife) de cada muestra (antigüedad en años desde la última fecha de
+    train_idx), normalizado a media 1 en train_idx. Array por muestra del dataset (NaN fuera)."""
+    idx = np.unique(np.asarray(train_idx))
+    d = samples["date"].to_numpy()[idx]
+    age = (d.max() - d) / np.timedelta64(1, "D") / 365.25
+    w = np.exp2(-age / halflife)
+    out = np.full(len(samples), np.nan, np.float32)
+    out[idx] = w / w.mean()
+    return out
 
 
 def date_groups(samples: pd.DataFrame, idx: np.ndarray, draw: np.ndarray | None = None):
@@ -150,6 +169,8 @@ def train_model(data: WindowData, train_idx: np.ndarray, cfg: TrainConfig, seed:
     else:
         horizon_w = None
     tail = data.tail_weights(train_idx, cfg.tail_weight) if cfg.tail_weight else None
+    rec_w = (recency_weights(data.samples, train_idx, cfg.recency_halflife)
+             if cfg.recency_halflife else None)
     if rel:
         y_mean, n_date = data.date_means(train_idx)   # solo muestras de entrenamiento
         rows = data.samples["row"].to_numpy()[train_idx]
@@ -191,6 +212,8 @@ def train_model(data: WindowData, train_idx: np.ndarray, cfg: TrainConfig, seed:
                 kw["weight_mu"] = torch.from_numpy(tail[b_idx])
             if horizon_w is not None:
                 kw["horizon_w"] = horizon_w
+            if rec_w is not None:
+                kw["weight"] = torch.from_numpy(rec_w[b_idx])
             loss, l_mu, l_sig = joint_loss(mu, logv, y, v, m, cfg.lam, mask_mu=mask_mu,
                                            huber=cfg.huber, **kw)
             opt.zero_grad()

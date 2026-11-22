@@ -73,13 +73,13 @@ def main() -> None:
 
     n = int(ser["R0"]["D10"].notna().sum())
     L = ["# Deciles de μ_5: dónde cae la mejora de IC (mu_tree, 22-11-2026)", "",
-         f"Ver el docstring de scripts/mu_deciles.py. {n} semanas; exceso de apertura a apertura "
+         (f"Ver el docstring de scripts/mu_deciles.py. {n} semanas; exceso de apertura a apertura "
          "sobre la media de las acciones, pb por semana; diferencia por pares con R0, t de NW "
          "(2 retardos). Pierna larga = media de D9 y D10; corta = media de D1 y D2 (en la corta, "
-         "una diferencia negativa es mejora).", "",
+         "una diferencia negativa es mejora)."), "",
          "## Resumen, 5 bloques juntos", "",
-         "| ejecución | larga (D9–D10) | − R0 (t) | corta (D1–D2) | − R0 (t) | D10 − R0 (t) | "
-         "D1 − R0 (t) |", "|---|---|---|---|---|---|---|"]
+         ("| ejecución | larga (D9–D10) | − R0 (t) | corta (D1–D2) | − R0 (t) | D10 − R0 (t) | "
+         "D1 − R0 (t) |"), "|---|---|---|---|---|---|---|"]
 
     def dt(k, c, b=None):
         d = res[k][c]["diff"]

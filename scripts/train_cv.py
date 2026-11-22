@@ -17,7 +17,8 @@ Velas agregadas (--coarse month|week): la red ve además el año entero con meno
 Opciones de mu_tree (22-11-2026; TrainConfig): --market (vela del mercado de la región; antes,
 data.market.build_market), --target-rank (L_μ sobre el rango gaussianizado de la fecha), --xsec
 (resumen aprendido del universo, lotes por fecha) y --tail-weight w (peso del decil alto de la
-fecha en L_μ). Sin ellas, como siempre.
+fecha en L_μ). Sin ellas, como siempre. Prueba de adaptación: --recency-halflife H (peso
+2^(−antigüedad / H años) de cada muestra en la pérdida).
 
 En paralelo (mu_tree): --member-ids entrena solo esos miembros (semillas 1000·k + m) y guarda sus
 predicciones en <bloque>_m<m>.parquet; cuando están todos los de --members, junta
@@ -73,6 +74,8 @@ def main() -> None:
     ap.add_argument("--xsec", action="store_true", help="resumen aprendido del universo")
     ap.add_argument("--tail-weight", type=float, default=TrainConfig.tail_weight,
                     help="peso del decil alto de la fecha en L_μ")
+    ap.add_argument("--recency-halflife", type=float, default=TrainConfig.recency_halflife,
+                    help="semivida (años) del peso por antigüedad de las muestras")
     ap.add_argument("--threads", type=int, default=TrainConfig.threads)
     ap.add_argument("--member-ids", type=int, nargs="+",
                     help="solo estos miembros (de 0 a --members − 1), en ficheros aparte")
@@ -84,7 +87,8 @@ def main() -> None:
     cfg = TrainConfig(epochs=args.epochs, epoch_frac=args.epoch_frac, lr=args.lr, lam=args.lam,
                       batch=args.batch, target=args.target, huber=args.huber, window=args.window,
                       coarse=args.coarse, threads=args.threads, market=args.market,
-                      target_rank=args.target_rank, xsec=args.xsec, tail_weight=args.tail_weight)
+                      target_rank=args.target_rank, xsec=args.xsec, tail_weight=args.tail_weight,
+                      recency_halflife=args.recency_halflife)
 
     data = WindowData(DATA_DIR / "dataset")
     folds = cv_folds(data.samples)

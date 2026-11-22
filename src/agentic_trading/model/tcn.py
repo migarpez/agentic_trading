@@ -162,7 +162,7 @@ def group_mean(h, group):
 
 
 def joint_loss(mu, logv, y, v, mask, lam: float = 1.0, horizons=HORIZONS, mask_mu=None,
-               huber: float | None = None, weight_mu=None, horizon_w=None):
+               huber: float | None = None, weight_mu=None, horizon_w=None, weight=None):
     """L = L_μ + λ·L_σ.
 
     L_μ = Σ_h MSE_h / h.  L_σ = media sobre h de la QLIKE sobre la varianza,
@@ -174,7 +174,9 @@ def joint_loss(mu, logv, y, v, mask, lam: float = 1.0, horizons=HORIZONS, mask_m
       e² si |e| ≤ d (igual que el MSE) y 2·d·|e| − d² a partir de ahí.
     - weight_mu (B, n_h): peso de cada muestra y horizonte en L_μ (tail_weight); la suma se divide
       igual por el número de muestras (con pesos de media 1, la escala no cambia).
-    - horizon_w: pesos de los horizontes en vez de 1/h (target_rank: iguales)."""
+    - horizon_w: pesos de los horizontes en vez de 1/h (target_rank: iguales).
+    - weight (B,): peso de cada muestra en L_μ y en L_σ (recency_halflife); como weight_mu, la
+      suma se divide igual por el número de muestras."""
     if horizon_w is None:
         w = 1.0 / torch.tensor(horizons, dtype=mu.dtype, device=mu.device)
     else:
@@ -188,6 +190,8 @@ def joint_loss(mu, logv, y, v, mask, lam: float = 1.0, horizons=HORIZONS, mask_m
         term = torch.where(a <= d, e ** 2, 2 * d * a - d ** 2)
     if weight_mu is not None:
         term = term * weight_mu
+    if weight is not None:
+        term = term * weight[:, None]
     if mask_mu is None:
         mse = term.mean(0)
     else:
@@ -196,5 +200,7 @@ def joint_loss(mu, logv, y, v, mask, lam: float = 1.0, horizons=HORIZONS, mask_m
     l_mu = (mse * w).sum()
     log_ratio = 2 * (torch.log(torch.where(mask, v, torch.ones_like(v))) - logv)
     q = torch.where(mask, torch.exp(log_ratio) - log_ratio - 1, torch.zeros_like(v))
+    if weight is not None:
+        q = q * weight[:, None]
     l_sig = (q.sum(0) / mask.sum(0).clamp(min=1)).mean()
     return l_mu + lam * l_sig, l_mu.detach(), l_sig.detach()
