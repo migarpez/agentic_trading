@@ -25,7 +25,11 @@ Reglas del juego (Rules):
     (p. ej., sin predicción ese día) conserva su stop; una compra sin d, d_max.
   En los dos, salta si el mínimo del día lo toca: se vende al precio del stop, o a la apertura si
   abre por debajo (con huecos, la pérdida puede pasar del 3 %). Después se puede volver a entrar.
-- Costes: cost × importe operado, en cada compra y en cada venta.
+- Costes: cost × importe operado, en cada compra y en cada venta. Modelo por activo (opcional,
+  23-11-2026; logs/universe_ext3.md): cost_asset (c de cada activo, en cada compra y venta, en
+  lugar de cost) y buy_tax (impuesto de cada activo, solo en las compras). Sin ellos (por
+  defecto), el c único de siempre, bit a bit. Portfolio.paid acumula lo pagado (costes e
+  impuestos).
 
 Simulador:
 - Decide con los cierres del día y opera en la apertura siguiente de cada activo: su próxima vela
@@ -65,6 +69,21 @@ class Rules:
     min_trade: float | None = None      # órdenes con |Δw| menor no se ejecutan
     min_weight_to: str = "cash"         # adónde va el peso que la regla del 1 % pone a 0
     close_below_min: bool = False       # cerrar posiciones mantenidas por debajo de min_weight
+    cost_asset: np.ndarray | None = None  # c por activo (columnas de Market), en lugar de cost
+    buy_tax: np.ndarray | None = None     # impuesto por activo, solo en las compras
+
+    @property
+    def per_asset(self) -> bool:
+        return self.cost_asset is not None or self.buy_tax is not None
+
+    def asset_costs(self, n: int) -> tuple[np.ndarray, np.ndarray]:
+        """(c de venta, c de compra) de cada uno de los n activos."""
+        c = np.full(n, self.cost) if self.cost_asset is None else np.asarray(self.cost_asset,
+                                                                            float)
+        tax = np.zeros(n) if self.buy_tax is None else np.asarray(self.buy_tax, float)
+        if len(c) != n or len(tax) != n:
+            raise ValueError("cost_asset y buy_tax deben tener un valor por activo")
+        return c, c + tax
 
 
 DEFAULT_RULES = Rules()
@@ -181,6 +200,8 @@ class Portfolio:
         self.record_stops = record_stops
         self.stops: list[tuple] = []
         self.n_stops = 0
+        self.paid = 0.0                         # costes e impuestos pagados, acumulados
+        self.c_sell, self.c_buy = rules.asset_costs(N) if rules.per_asset else (None, None)
 
     # ------------------------------------------------------------------ estado
     def values(self) -> np.ndarray:
@@ -210,19 +231,26 @@ class Portfolio:
             s = dn < 0
             if s.any():
                 amt = float((-dn[s] * px[s]).sum())
-                self.cash += amt * (1 - c)
+                fee = amt * c if self.c_sell is None else float((-dn[s] * px[s] *
+                                                                 self.c_sell[j[s]]).sum())
+                self.cash += amt * (1 - c) if self.c_sell is None else amt - fee
+                self.paid += fee
                 traded += amt
                 n[j[s]] += dn[s]
             b = dn > 0
             if b.any():
-                need = float((dn[b] * px[b]).sum()) * (1 + c)
+                cb = c if self.c_buy is None else self.c_buy[j[b]]
+                need = float((dn[b] * px[b] * (1 + cb)).sum()) if self.c_buy is not None \
+                    else float((dn[b] * px[b]).sum()) * (1 + c)
                 q = dn[b] * min(1.0, max(self.cash, 0.0) / need)      # sin apalancamiento
                 jb, old = j[b], n[j[b]]
                 avg[jb] = np.where(old > 0, (old * np.nan_to_num(avg[jb]) + q * px[b]) /
                                    np.maximum(old + q, 1e-300), px[b])
                 n[jb] = old + q
                 amt = float((q * px[b]).sum())
-                self.cash -= amt * (1 + c)
+                fee = amt * c if self.c_buy is None else float((q * px[b] * cb).sum())
+                self.cash -= amt * (1 + c) if self.c_buy is None else amt + fee
+                self.paid += fee
                 traded += amt
             gone = n[j] <= 1e-12
             n[j[gone]], avg[j[gone]] = 0.0, np.nan
@@ -241,7 +269,10 @@ class Portfolio:
                 kk = k[hit]
                 px = np.where(gap[hit], o[kk], self.stop[kk])
                 amt = float((n[kk] * px).sum())
-                self.cash += amt * (1 - c)
+                fee = amt * c if self.c_sell is None else float((n[kk] * px *
+                                                                 self.c_sell[kk]).sum())
+                self.cash += amt * (1 - c) if self.c_sell is None else amt - fee
+                self.paid += fee
                 traded += amt
                 self.n_stops += len(kk)
                 if self.record_stops:
@@ -329,8 +360,10 @@ def simulate(market: Market, policy: Callable[[State], pd.Series], decision_date
     decide = set(pd.DatetimeIndex(decision_dates))
     out = {k: np.zeros(T) for k in ("nav", "traded", "costs", "cash", "positions")}
     for t, d in enumerate(market.dates):
+        paid0 = pf.paid
         nav, traded = pf.run_day(t)
-        out["nav"][t], out["traded"][t], out["costs"][t] = nav, traded, traded * rules.cost
+        out["nav"][t], out["traded"][t] = nav, traded
+        out["costs"][t] = pf.paid - paid0 if rules.per_asset else traded * rules.cost
         out["cash"][t], out["positions"][t] = pf.cash, int((pf.n > 0).sum())
         if d in decide and nav > 0:
             held = np.flatnonzero(pf.n > 0)

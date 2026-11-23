@@ -269,3 +269,34 @@ def test_close_below_min_even_if_smaller_than_min_trade():
         elif t == 2:
             pf.order(np.array([], int), np.array([]), eligible=[1])
     assert pf.n[0] > 0
+
+
+def test_per_asset_costs_and_buy_tax():
+    """Modelo de costes por activo (23-11-2026): c por activo en compras y ventas, impuesto solo
+    en las compras; con c igual para todos y sin impuesto, lo mismo que el c único."""
+    frames = {"X": frame([10, 10, 10, 10, 10, 10]), "Y": frame([20, 20, 20, 20, 20, 20])}
+    m = Market.from_frames(frames)
+    days = [DAYS[0], DAYS[2]]
+
+    def pol(state):
+        return pd.Series({"X": 0.5, "Y": 0.5} if state.date == DAYS[0] else {"X": 0.0, "Y": 0.0})
+
+    base = simulate(m, pol, days, reference_rules(0.01))
+    same = simulate(m, pol, days, Rules(cost=0.0, min_weight=None, stop_loss=None,
+                                        cost_asset=np.array([0.01, 0.01])))
+    np.testing.assert_allclose(same.nav, base.nav, rtol=1e-12)
+    np.testing.assert_allclose(same.costs, base.costs, rtol=1e-12, atol=1e-15)
+    r = Rules(cost=0.0, min_weight=None, stop_loss=None, cost_asset=np.array([0.01, 0.002]),
+              buy_tax=np.array([0.005, 0.0]))
+    res = simulate(m, pol, days, r)
+    # compra: X paga 1 % + 0,5 %, Y 0,2 %; con 0,5 de peso cada una, sin pasar de la caja
+    q = min(1.0, 1.0 / (0.5 * 1.015 + 0.5 * 1.002))
+    buy = 0.5 * q * 0.015 + 0.5 * q * 0.002
+    sell = 0.5 * q * 0.01 + 0.5 * q * 0.002              # ventas, sin impuesto
+    assert res.costs.iloc[1] == pytest.approx(buy)
+    assert res.costs.iloc[3] == pytest.approx(sell)
+    assert res.nav.iloc[-1] == pytest.approx(1.0 - buy - sell)
+    pf = Portfolio(m, r)
+    assert pf.c_sell.tolist() == [0.01, 0.002] and pf.c_buy.tolist() == [0.015, 0.002]
+    with pytest.raises(ValueError):
+        Portfolio(m, Rules(cost_asset=np.array([0.01])))
