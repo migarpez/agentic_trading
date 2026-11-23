@@ -96,7 +96,7 @@ FRAC_EPS = 1e-4
 def obs_tensors(obs_list: list[Obs]) -> dict:
     """Lote con relleno: [B, N_max, ...]."""
     B, n = len(obs_list), max(len(o.elig) for o in obs_list)
-    x = np.zeros((B, n, N_FEAT), np.float32)
+    x = np.zeros((B, n, obs_list[0].x.shape[1]), np.float32)     # N_FEAT, o +1 con rank
     z, wt = np.zeros((B, n), np.float32), np.zeros((B, n), np.float32)
     valid = np.zeros((B, n), bool)
     for i, o in enumerate(obs_list):

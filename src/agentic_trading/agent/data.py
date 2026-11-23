@@ -109,14 +109,18 @@ def synthetic_signal(y: np.ndarray, dates: np.ndarray, rho: float, seed: int) ->
 def build_panel(run: str = "final20", data: WindowData | None = None,
                 symbols_limit: int | None = None, freq: str = "daily",
                 signal: float | None = None, signal_seed: int = 0,
-                prior: str = "mu5") -> Panel:
+                prior: str = "mu5", rank: bool = False) -> Panel:
     """Panel de 2000–2019 (ver el docstring del módulo). symbols_limit: solo para pruebas.
     freq: "daily" o "weekly"; signal: ρ de la señal sintética (None: las predicciones);
-    prior: "mu5" o "none" (z_mu5 = 0)."""
+    prior: "mu5" o "none" (z_mu5 = 0). rank (23-11-2026, clonado de la regla fija): añade al
+    final de las variables el puesto de μ_5 entre los activos del día (0 = el mayor) / 60, con
+    tope 5, sin estandarizar (la regla fija vende al salir de los 60 primeros)."""
     assert freq in ("daily", "weekly") and prior in ("mu5", "none")
     data = data or WindowData(DATA_DIR / "dataset")
     pr, fp = load_predictions(data, run)
     fp = {**fp, "freq": freq, "signal": signal, "signal_seed": signal_seed, "prior": prior}
+    if rank:
+        fp["rank"] = True
     if signal is not None:
         rows = data.samples["row"].to_numpy()[pr["sample"].to_numpy()]
         for i, h in enumerate(H):
@@ -166,7 +170,12 @@ def build_panel(run: str = "final20", data: WindowData | None = None,
         rows = order[bounds[k]:bounds[k + 1]]
         rows = rows[np.argsort(jj[rows], kind="stable")]
         elig.append(jj[rows].astype(np.int64))
-        feats.append(X[rows])
+        f = X[rows]
+        if rank:
+            r = np.empty(len(rows))
+            r[np.argsort(-mu5[rows], kind="stable")] = np.arange(len(rows))
+            f = np.c_[f, np.minimum(r / 60.0, 5.0)].astype(np.float32)
+        feats.append(f)
         zs.append(z[rows])
     close_ffill = pd.DataFrame(market.close).ffill().to_numpy()
     norm = {"mean": mean.to_dict(), "sd": sd.to_dict()}
