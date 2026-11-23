@@ -199,6 +199,31 @@ def fetch_index(spec: IndexSpec, session: requests.Session | None = None) -> pd.
     return out
 
 
+def fetch_sp500_added(session: requests.Session | None = None) -> pd.DataFrame:
+    """Fecha de alta en el S&P 500 ("Date added") de cada componente actual, de la tabla de
+    Wikipedia (23-11-2026; scripts/survivorship.py). Columnas: source_symbol, symbol (Yahoo),
+    name, date_added (NaT si la celda no trae fecha) y fetched (fecha de descarga). Una fila por
+    clase de acción, como fetch_index."""
+    spec = next(x for x in INDICES if x.name == "SP500")
+    s = session or requests
+    r = s.get(spec.wiki + spec.page, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    t = _find_table(r.text, spec)
+    if "Date added" not in t:
+        raise ValueError("SP500: la tabla no trae la columna Date added")
+    out = pd.DataFrame({
+        "source_symbol": t[spec.ticker_col].astype(str).str.strip(),
+        "name": t[spec.name_col].astype(str).str.strip(),
+        "date_added": pd.to_datetime(t["Date added"].astype(str).str.extract(
+            r"(\d{4}-\d{2}-\d{2})")[0], errors="coerce").to_numpy(),
+    })
+    out = (out.assign(source_symbol=out["source_symbol"].str.split(r"\s*/\s*"))
+           .explode("source_symbol", ignore_index=True))
+    out["symbol"] = [to_yahoo(x, spec.suffix) for x in out["source_symbol"]]
+    out["fetched"] = pd.Timestamp(date.today())
+    return out
+
+
 # --------------------------------------------------------------------------- equivalencias
 
 def equivalent_groups(raw: pd.DataFrame, by_name: bool = False) -> list[set[str]]:
