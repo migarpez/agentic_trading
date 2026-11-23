@@ -97,13 +97,14 @@ class CausalStack(nn.Module):
 class TCN(CausalStack):
     def __init__(self, n_in: int = 5, channels: int = 32, kernel: int = 3,
                  dilations=(1, 2, 4, 8, 16, 32, 64), hidden: int = 64, n_out: int = 6,
-                 coarse: str | None = None, market: bool = False, xsec: bool = False):
+                 coarse: str | None = None, market: bool = False, xsec: bool = False,
+                 size: bool = False):
         n_base = n_in
         if market:
             n_in = n_base + 4
         super().__init__(n_in, channels, kernel, dilations)
         self.coarse = coarse
-        self.market, self.xsec = market, xsec
+        self.market, self.xsec, self.size = market, xsec, size
         n_coarse = 0
         if coarse is not None:
             if coarse not in COARSE:
@@ -116,7 +117,7 @@ class TCN(CausalStack):
                 self.coarse_net = CausalStack(n_in, channels, kernel,
                                               dilations_for(n_bars, kernel))
             n_coarse = channels
-        n_feat = channels + n_coarse + 1
+        n_feat = channels + n_coarse + 1 + (1 if size else 0)   # escalares: log σ (+ tamaño)
         self.head = nn.Sequential(nn.Linear(n_feat * (2 if xsec else 1), hidden), nn.GELU(),
                                   nn.Linear(hidden, n_out))
         scale = torch.ones(n_in)
@@ -135,7 +136,7 @@ class TCN(CausalStack):
         return self.coarse_net.features_last(xc.transpose(1, 2))
 
     def forward(self, x, scalar, xc=None, group=None):
-        """x: (B, T, 5) (9 con market); scalar: (B, 1); xc: (B, n_velas, 5 o 9), solo con coarse;
+        """x: (B, T, 5) (9 con market); scalar: (B, 1) (2 con size); xc: (B, n_velas, 5 o 9), solo con coarse;
         group: (B,) enteros, solo con xsec (la media se toma dentro de cada grupo). Devuelve
         (μ (B, 3), log v (B, 3))."""
         if self.coarse is None and xc is not None:

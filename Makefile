@@ -1,6 +1,6 @@
 PY := .venv/bin/python
 
-.PHONY: data universe download audit clean dataset ext test lint
+.PHONY: data universe download audit clean dataset ext comb test lint
 
 data: download audit clean  ## pipeline de datos completo, con el universo congelado
 
@@ -27,6 +27,9 @@ ext:  ## universo ampliado (medianas y pequeñas, 22-11-2026) -> data/ext/, apar
 	$(EXT) $(PY) scripts/audit_data.py --max-plots 0
 	$(EXT) $(PY) scripts/clean_data.py
 	$(EXT) $(PY) scripts/build_dataset.py
+
+comb:  ## dataset combinado (actual + ampliado) y escalar de tamaño -> data/comb/ (paso 2)
+	$(PY) scripts/build_comb.py
 
 test:
 	.venv/bin/pytest -q

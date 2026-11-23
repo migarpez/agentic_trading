@@ -34,6 +34,10 @@ Prueba de adaptación (recency, 22-11-2026), desactivada por defecto:
 - recency_halflife = H años: cada muestra de entrenamiento pesa 2^(−antigüedad / H) en L_μ y en
   L_σ, con la antigüedad desde la última fecha de entrenamiento (la de train_idx) y los pesos
   normalizados a media 1 entre las muestras de train_idx (recency_weights).
+
+Universo ampliado, paso 2 (22-11-2026), desactivado por defecto:
+- size = True: un segundo escalar de entrada, el percentil de tamaño de la muestra entre las de su
+  fecha (data.size.build_size; WindowData.size). Solo con el dataset combinado (data/comb/).
 """
 
 from __future__ import annotations
@@ -70,6 +74,7 @@ class TrainConfig:
     xsec: bool = False           # resumen aprendido del universo (lotes por fecha)
     tail_weight: float | None = None   # peso del decil alto de la fecha en L_μ
     recency_halflife: float | None = None   # semivida (años) del peso por antigüedad
+    size: bool = False                      # escalar de tamaño (percentil de C·V en euros)
 
 
 def month_bootstrap(samples: pd.DataFrame, idx: np.ndarray, rng: np.random.Generator,
@@ -125,6 +130,8 @@ def _batch(data, b_idx, cfg_or_model):
     kw = {"window": getattr(g, "window", None), "coarse": getattr(g, "coarse", None)}
     if getattr(g, "market", False):
         kw["market"] = True
+    if getattr(g, "size", False):
+        kw["size"] = True
     return data.batch(b_idx, **kw)
 
 
@@ -141,7 +148,7 @@ def build_model(cfg: TrainConfig | dict) -> TCN:
     if not isinstance(cfg, dict):
         cfg = asdict(cfg)
     window, coarse = cfg.get("window", WINDOW), cfg.get("coarse")
-    extra = {k: True for k in ("market", "xsec") if cfg.get(k)}
+    extra = {k: True for k in ("market", "xsec", "size") if cfg.get(k)}
     model = TCN(dilations=dilations_for(window), coarse=coarse, **extra)
     model.window = window
     return model

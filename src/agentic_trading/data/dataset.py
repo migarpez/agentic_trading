@@ -254,6 +254,7 @@ class WindowData:
         self.allow_test = allow_test
         self._regions = None
         self._market = None
+        self._size = None
 
     @property
     def regions(self) -> np.ndarray:
@@ -281,6 +282,21 @@ class WindowData:
                 raise ValueError(f"{d}: la vela del mercado es de otro dataset")
             self._market = {k: np.load(d / f"{k}.npy", mmap_mode="r") for k in MARKET_ARRAYS}
         return self._market
+
+    @property
+    def size(self) -> np.ndarray:
+        """Percentil de tamaño de cada muestra (data.size.build_size), en <dataset>/size."""
+        if self._size is None:
+            d = self.dir / "size"
+            if not (d / "meta.json").exists():
+                raise FileNotFoundError(f"falta el tamaño en {d} (data.size.build_size)")
+            meta = json.loads((d / "meta.json").read_text())
+            fp = self.meta.get("clean_fingerprint")
+            if meta["n_samples"] != len(self.samples) or fp not in (None,
+                                                                    meta["clean_fingerprint"]):
+                raise ValueError(f"{d}: el tamaño es de otro dataset")
+            self._size = np.load(d / "pct.npy")
+        return self._size
 
     def split(self, name: str) -> np.ndarray:
         """Índices de muestra de un bloque. El test exige allow_test=True (se abre una vez)."""
@@ -354,14 +370,15 @@ class WindowData:
         return out
 
     def batch(self, idx: np.ndarray, window: int | None = None,
-              coarse: str | None = None, market: bool = False) -> dict:
+              coarse: str | None = None, market: bool = False, size: bool = False) -> dict:
         """Lote de muestras: x (B, window, 5), scalar (B, 1), y (B, 3), v (B, 3), mask_sigma (B, 3).
 
         window: solo las últimas `window` velas de la ventana (por defecto, la ventana entera).
         σ_ventana, la mediana del volumen y los targets siguen siendo los de la ventana entera.
         coarse: "month" o "week" añade xc (B, n_velas, 5), las velas agregadas (coarse_bars).
         market: x (y xc) llevan 4 canales más, la vela del mercado de la región (self.market),
-        normalizada con σ_ventana del activo: (B, window, 9)."""
+        normalizada con σ_ventana del activo: (B, window, 9).
+        size: scalar lleva una columna más, el percentil de tamaño (self.size): (B, 2)."""
         w = self.window if window is None else int(window)
         if not 1 <= w <= self.window:
             raise ValueError(f"window debe estar entre 1 y {self.window}")
@@ -395,6 +412,8 @@ class WindowData:
         }
         if coarse is not None:
             out["xc"] = self.coarse_bars(rows, coarse, market=market)
+        if size:
+            out["scalar"] = np.concatenate([out["scalar"], self.size[idx][:, None]], 1)
         return out
 
     def coarse_bars(self, rows: np.ndarray, kind: str, market: bool = False) -> np.ndarray:

@@ -18,7 +18,8 @@ Opciones de mu_tree (22-11-2026; TrainConfig): --market (vela del mercado de la 
 data.market.build_market), --target-rank (L_μ sobre el rango gaussianizado de la fecha), --xsec
 (resumen aprendido del universo, lotes por fecha) y --tail-weight w (peso del decil alto de la
 fecha en L_μ). Sin ellas, como siempre. Prueba de adaptación: --recency-halflife H (peso
-2^(−antigüedad / H años) de cada muestra en la pérdida).
+2^(−antigüedad / H años) de cada muestra en la pérdida). Universo ampliado: --size (escalar de
+tamaño; data/size.py, solo con el dataset combinado).
 
 En paralelo (mu_tree): --member-ids entrena solo esos miembros (semillas 1000·k + m) y guarda sus
 predicciones en <bloque>_m<m>.parquet; cuando están todos los de --members, junta
@@ -76,6 +77,7 @@ def main() -> None:
                     help="peso del decil alto de la fecha en L_μ")
     ap.add_argument("--recency-halflife", type=float, default=TrainConfig.recency_halflife,
                     help="semivida (años) del peso por antigüedad de las muestras")
+    ap.add_argument("--size", action="store_true", help="escalar de tamaño (data/size.py)")
     ap.add_argument("--threads", type=int, default=TrainConfig.threads)
     ap.add_argument("--member-ids", type=int, nargs="+",
                     help="solo estos miembros (de 0 a --members − 1), en ficheros aparte")
@@ -88,7 +90,7 @@ def main() -> None:
                       batch=args.batch, target=args.target, huber=args.huber, window=args.window,
                       coarse=args.coarse, threads=args.threads, market=args.market,
                       target_rank=args.target_rank, xsec=args.xsec, tail_weight=args.tail_weight,
-                      recency_halflife=args.recency_halflife)
+                      recency_halflife=args.recency_halflife, size=args.size)
 
     data = WindowData(DATA_DIR / "dataset")
     folds = cv_folds(data.samples)
