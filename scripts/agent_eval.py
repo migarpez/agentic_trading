@@ -26,6 +26,7 @@ from agentic_trading.agent.evaluation import (
     summarize,
 )
 from agentic_trading.agent.policy import AgentNet
+from agentic_trading.agent.ppo import panel_n_feat
 from agentic_trading.agent.simulator import agent_rules
 from agentic_trading.config import DATA_DIR, ROOT
 
@@ -37,30 +38,36 @@ _PANELS: dict = {}
 def panel_for(fp: dict):
     p = fp["panel"]
     key = (p["run"], p.get("freq", "daily"), p.get("signal"), p.get("signal_seed", 0),
-           p.get("prior", "mu5"))
+           p.get("prior", "mu5"), p.get("rank", False))
     if key not in _PANELS:
         _PANELS[key] = build_panel(key[0], freq=key[1], signal=key[2], signal_seed=key[3],
-                                   prior=key[4])
+                                   prior=key[4], rank=key[5])
     return _PANELS[key]
 
 
-def nets(cfg: dict, ckpt) -> tuple[AgentNet, AgentNet]:
+def nets(cfg: dict, ckpt, n_feat: int = 11) -> tuple[AgentNet, AgentNet]:
+    """Red entrenada y política inicial: la red con la misma semilla antes de entrenar o, si el
+    checkpoint la trae ("init_net", arranque desde la política clonada), esa."""
     torch.set_num_threads(1)
     torch.manual_seed(cfg["seed"])            # igual que Trainer: la red inicial
-    init = AgentNet(hidden=cfg["hidden"], emb=cfg["emb"], trade_bias=cfg["trade_bias"])
-    net = AgentNet(hidden=cfg["hidden"], emb=cfg["emb"], trade_bias=cfg["trade_bias"])
-    net.load_state_dict(torch.load(ckpt, weights_only=False)["net"])
+    kw = {"n_feat": n_feat, "hidden": cfg["hidden"], "emb": cfg["emb"],
+          "trade_bias": cfg["trade_bias"]}
+    init, net = AgentNet(**kw), AgentNet(**kw)
+    ck = torch.load(ckpt, weights_only=False)
+    net.load_state_dict(ck["net"])
+    if "init_net" in ck:
+        init.load_state_dict(ck["init_net"])
     return net.eval(), init.eval()
 
 
-def evaluate(name: str, seeds) -> dict:
+def evaluate(name: str, seeds, ckpt_name: str = "ckpt.pt") -> dict:
     run_dir = DATA_DIR / "agent" / name
     fp = json.loads((run_dir / "fingerprint.json").read_text())
     cfg = fp["cfg"]
     panel = panel_for(fp)
     rules = agent_rules(cfg["cost"])
-    net, init = nets(cfg, run_dir / "ckpt.pt")
-    steps = torch.load(run_dir / "ckpt.pt", weights_only=False)["steps"]
+    net, init = nets(cfg, run_dir / ckpt_name, panel_n_feat(panel))
+    steps = torch.load(run_dir / ckpt_name, weights_only=False)["steps"]
     out = {"name": name, "steps": steps, "panel": fp["panel"], "cfg": cfg, "periods": {}}
     for label, a, b in PERIODS:
         L = policy_runs(panel, net, a, b, rules, cfg["K"], seeds)
@@ -111,12 +118,13 @@ def main() -> None:
     ap.add_argument("--names", nargs="+", required=True)
     ap.add_argument("--seeds", type=int, default=20)
     ap.add_argument("--summary", default=None)
+    ap.add_argument("--ckpt", default="ckpt.pt", help="checkpoint de cada ejecución")
     args = ap.parse_args()
     log_dir = ROOT / "logs" / "agent"
     results = []
     for name in args.names:
         t0 = time.time()
-        r = evaluate(name, range(1000, 1000 + args.seeds))
+        r = evaluate(name, range(1000, 1000 + args.seeds), args.ckpt)
         (log_dir / f"{name}_eval2.json").write_text(json.dumps(r, indent=1, ensure_ascii=False))
         results.append(r)
         print(f"{name}: {time.time() - t0:.0f} s", flush=True)

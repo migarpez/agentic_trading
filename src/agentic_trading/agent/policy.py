@@ -144,6 +144,27 @@ def component_logprobs(net: AgentNet, ob: dict, rc: dict) -> tuple[torch.Tensor,
     return lp * mask, mask, ent, h["value"]
 
 
+def kl_to(net: AgentNet, ref: AgentNet, ob: dict, rc: dict) -> torch.Tensor:
+    """KL(π_net ‖ π_ref) por paso, media por componente (operar de cada candidato, puntuación de
+    los que se operan, stop de los que acaban con posición y liquidez; los mismos componentes que
+    el ratio por componente de PPO), analítica en cada estado del lote."""
+    from torch.distributions import kl_divergence
+    h = net.heads(**ob)
+    with torch.no_grad():
+        hr = ref.heads(**ob)
+    g = lambda d, k: torch.gather(d[k], 1, rc["cand"])
+    cm = rc["cmask"].float()
+    op, rel = cm * rc["trade"], cm * rc["rel"].float()
+    std, std_r = net.log_std.exp(), ref.log_std.exp().detach()
+    k_tr = kl_divergence(Bernoulli(logits=g(h, "trade_logit")),
+                         Bernoulli(logits=g(hr, "trade_logit")))
+    k_sc = kl_divergence(Normal(g(h, "score"), std), Normal(g(hr, "score"), std_r))
+    k_st = kl_divergence(Beta(g(h, "alpha"), g(h, "beta")), Beta(g(hr, "alpha"), g(hr, "beta")))
+    k_lq = kl_divergence(Normal(h["liq"], std), Normal(hr["liq"], std_r))
+    total = (k_tr * cm).sum(1) + (k_sc * op).sum(1) + (k_st * rel).sum(1) + k_lq
+    return total / (cm.sum(1) + op.sum(1) + rel.sum(1) + 1)
+
+
 def evaluate_actions(net: AgentNet, ob: dict, rc: dict) -> tuple[torch.Tensor, ...]:
     """Log-probabilidad conjunta de las acciones guardadas, entropía y valor, por paso."""
     lp, _, ent, v = component_logprobs(net, ob, rc)

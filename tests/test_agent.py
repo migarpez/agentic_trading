@@ -251,3 +251,56 @@ def test_policy_runs_and_paired(panel):
     assert s["rentabilidad anual"][1] > 0
     d, se, _ = paired(r1["stochastic"], r2["stochastic"], "Sharpe")
     assert d == 0 and se == 0
+
+
+def test_rule_record_reproduces_rule_order(panel):
+    """Clonado (agent/bc.py): con las acciones objetivo, el reparto de la política (softmax de las
+    que se operan y la liquidez, como en act) da los pesos de la regla: ~1/20 en las que se
+    quedan o se compran y < 1 % (la regla del 1 % las cierra) en las que se venden."""
+    from agentic_trading.agent.bc import rule_record
+    from agentic_trading.agent.evaluation import rule_order
+    rules = agent_rules()
+    env = TradingEnv(panel, rules, n_steps=40)
+    obs = env.reset(5)
+    for _ in range(40):
+        order = rule_order(obs, rules)
+        rec = rule_record(obs)
+        held_c = obs.held[rec.cand]
+        assert rec.trade[held_c].all()                      # todas las posiciones operan
+        room = max(0.0, 1.0 - obs.room_kept)
+        logits = np.r_[rec.s[rec.trade], rec.liq]
+        e = np.exp(logits - logits.max())
+        w = e / e.sum() * room
+        w_by = dict(zip(obs.elig[rec.cand[rec.trade]], w[:-1]))
+        keep = set(order["je"][order["w"] > 0])
+        sold = set(order["je"][order["w"] == 0])
+        assert keep == {j for j, x in w_by.items() if x >= rules.min_weight}
+        # pesos casi iguales: κ·z con κ = 0,05; con 25–40 activos, el top 20 abarca más z que con
+        # ~500, así que ±15 % del peso
+        assert all(abs(w_by[j] - 1 / 20) < 0.0075 for j in keep)
+        assert all(w_by[j] < rules.min_weight for j in sold)
+        obs, _, done, _ = env.step_order(order)
+        if done:
+            break
+
+
+def test_kl_to_reference_and_schedule(panel):
+    import copy
+
+    from agentic_trading.agent.policy import kl_to, record_tensors
+    steps = walk(panel, n=6)
+    torch.manual_seed(0)
+    net = AgentNet()
+    ob = obs_tensors([s[0] for s in steps])
+    rc = record_tensors([s[2] for s in steps])
+    ref = copy.deepcopy(net)
+    assert float(kl_to(net, ref, ob, rc).detach().abs().max()) < 1e-6
+    with torch.no_grad():
+        ref.psi[-1].bias[0] += 0.3
+    assert float(kl_to(net, ref, ob, rc).detach().min()) > 0
+    cfg = PPOConfig(n_envs=2, rollout=8, minibatch=8, epochs=1, episode=50, seed=1,
+                    ratio="component", kl_coef=1.0, kl_frac=0.5, kl_updates=4)
+    tr = Trainer(panel, cfg, ref_net=copy.deepcopy(AgentNet()))
+    rows = [tr.train_step() for _ in range(3)]
+    assert [r["kl_coef"] for r in rows] == [1.0, 0.5, 0.0]
+    assert np.isfinite(rows[0]["kl_ref"]) and "kl_ref" not in rows[2]

@@ -22,6 +22,12 @@
   red solo aprende a subir el ruido: prueba smoke_relcomp_g095_s0).
 - trade_bias: sesgo inicial de operar/mantener (p(operar) = σ(trade_bias); 0 → 0,5).
 - Determinista con semilla: torch con un hilo y generadores de numpy por entorno.
+- Penalización KL hacia una política de referencia (23-11-2026, clonado de la regla fija:
+  agent/bc.py): con ref_net y kl_coef > 0, se suma kl_coef·(1 − u / (kl_frac·kl_updates)) por la
+  KL(π ‖ π_ref) media por componente (policy.kl_to), que baja de forma lineal hasta 0 en la
+  fracción kl_frac de las kl_updates actualizaciones. Sin ref_net (por defecto), nada cambia.
+- n_feat: variables por activo de la red, las del panel más peso y distancia al stop (11, o 12 con
+  el rango de μ_5 del panel, data.build_panel(rank=True)).
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from agentic_trading.agent.policy import (
     act,
     component_logprobs,
     evaluate_actions,
+    kl_to,
     obs_tensors,
     record_tensors,
 )
@@ -71,15 +78,21 @@ class PPOConfig:
     hidden: int = 64
     emb: int = 32
     seed: int = 0
+    kl_coef: float = 0.0            # penalización KL hacia ref_net (0: sin penalización)
+    kl_frac: float = 0.3            # fracción de kl_updates en que baja hasta 0
+    kl_updates: int = 1000
 
 
 class Trainer:
-    def __init__(self, panel: Panel, cfg: PPOConfig, rules: Rules | None = None):
+    def __init__(self, panel: Panel, cfg: PPOConfig, rules: Rules | None = None,
+                 ref_net: AgentNet | None = None):
         torch.set_num_threads(1)
         torch.manual_seed(cfg.seed)
         self.p, self.cfg = panel, cfg
         self.rules = rules or agent_rules(cfg.cost)
-        self.net = AgentNet(hidden=cfg.hidden, emb=cfg.emb, trade_bias=cfg.trade_bias)
+        self.net = AgentNet(n_feat=panel_n_feat(panel), hidden=cfg.hidden, emb=cfg.emb,
+                            trade_bias=cfg.trade_bias)
+        self.ref_net = ref_net
         self.opt = torch.optim.Adam(self.net.parameters(), lr=cfg.lr)
         k_lo, k_hi = panel.k_range(panel.dec_dates[0], TRAIN_END)
         self.k_lo, self.k_hi = k_lo, k_hi - 1 - cfg.episode   # el último paso acaba ≤ 2015
@@ -155,8 +168,9 @@ class Trainer:
         adv = np.array([d[3] for d in data], np.float32)
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
         rng = np.random.default_rng([cfg.seed, 10_000 + self.updates])
-        logs = {k: [] for k in ("loss_pi", "loss_v", "entropy", "kl", "clipfrac")}
+        logs = {k: [] for k in ("loss_pi", "loss_v", "entropy", "kl", "clipfrac", "kl_ref")}
         old = self._old_components(data) if cfg.ratio == "component" else None
+        coef = self.kl_weight()
         for _ in range(cfg.epochs):
             perm = rng.permutation(n)
             for s in range(0, n, cfg.minibatch):
@@ -183,6 +197,10 @@ class Trainer:
                     ent = ent / cmask.sum(1)        # misma escala que el objetivo (por componente)
                 l_v = ((v - ret) ** 2).mean()
                 loss = l_pi + cfg.vf_coef * l_v - cfg.ent_coef * ent.mean()
+                if coef > 0:
+                    k_ref = kl_to(net, self.ref_net, ob, rc).mean()
+                    loss = loss + coef * k_ref
+                    logs["kl_ref"].append(float(k_ref))
                 self.opt.zero_grad()
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(net.parameters(), cfg.max_grad)
@@ -196,7 +214,15 @@ class Trainer:
                     logs["clipfrac"].append(float((((ratio - 1).abs() > cfg.clip).float()
                                                    * cmask).sum() / nm))
         self.updates += 1
-        return {k: float(np.mean(v)) for k, v in logs.items()}
+        out = {k: float(np.mean(v)) for k, v in logs.items() if v}
+        out["kl_coef"] = coef
+        return out
+
+    def kl_weight(self) -> float:
+        cfg = self.cfg
+        if self.ref_net is None or cfg.kl_coef <= 0:
+            return 0.0
+        return cfg.kl_coef * max(0.0, 1.0 - self.updates / (cfg.kl_frac * cfg.kl_updates))
 
     def _old_components(self, data: list) -> list:
         """Log-probabilidades de partida por componente de cada paso, sin relleno: (operar,
@@ -251,7 +277,8 @@ class Trainer:
                 "history": self.history,
                 "rngs": [r.bit_generator.state for r in self.rngs],
                 "torch_rng": torch.get_rng_state(),
-                "envs": [(e.k0, e.k) for e in self.envs]}
+                "envs": [(e.k0, e.k) for e in self.envs],
+                **({"init_net": self.init_state} if getattr(self, "init_state", None) else {})}
 
     def save(self, path) -> None:
         torch.save(self.state_dict(), path)
@@ -268,6 +295,11 @@ class Trainer:
         torch.set_rng_state(ck["torch_rng"])
         self.obs = [e.reset(int(r.integers(self.k_lo, self.k_hi + 1)))
                     for e, r in zip(self.envs, self.rngs)]
+
+
+def panel_n_feat(panel: Panel) -> int:
+    """Variables por activo de la red: las del panel, más peso y distancia al stop."""
+    return int(panel.feats[0].shape[1]) + 2
 
 
 def run_policy(panel: Panel, net: AgentNet, start, end, rules: Rules, K: int = 20,

@@ -14,16 +14,26 @@ capacidad: --signal ρ sustituye μ por una señal sintética con IC ≈ ρ (age
 --prior none quita μ_5 de la puntuación inicial. La evaluación con muchas semillas y frente a la
 política inicial está en scripts/agent_eval.py.
 
+Clonado de la regla fija (23-11-2026, agent/bc.py; scripts/agent_bc.py): --init PATH arranca la
+red desde una política clonada (checkpoint con "net"), que queda como referencia de la
+penalización KL (--kl-coef, --kl-frac; baja hasta 0 en esa fracción de --updates) y como
+"init_net" del checkpoint (agent_eval.py la usa como política inicial). --critic-warmup N ajusta
+el crítico N iteraciones antes de la primera actualización. --keep-every guarda además
+ckpt_u<N>.pt (y ckpt_u0.pt antes de empezar). --rank añade el rango de μ_5 a las variables.
+
 Uso: python scripts/train_agent.py --name smoke --gamma 0.95 --seed 0 --minutes 30 --eval
 """
 
 import argparse
+import copy
 import json
 import time
 from dataclasses import asdict
 
 import numpy as np
+import torch
 
+from agentic_trading.agent.bc import warm_critic
 from agentic_trading.agent.data import VALID_START, build_panel
 from agentic_trading.agent.ppo import PPOConfig, Trainer, run_policy, write_jsonl
 from agentic_trading.agent.simulator import agent_rules, performance
@@ -77,24 +87,52 @@ def main() -> None:
     ap.add_argument("--signal-seed", type=int, default=0)
     ap.add_argument("--prior", choices=["mu5", "none"], default="mu5")
     ap.add_argument("--eval", action="store_true")
+    ap.add_argument("--rank", action="store_true")
+    ap.add_argument("--init", default=None, help="checkpoint de la política clonada")
+    ap.add_argument("--kl-coef", type=float, default=0.0)
+    ap.add_argument("--kl-frac", type=float, default=0.3)
+    ap.add_argument("--critic-warmup", type=int, default=0)
+    ap.add_argument("--keep-every", type=int, default=0)
     args = ap.parse_args()
 
     cfg = PPOConfig(gamma=args.gamma, seed=args.seed, n_envs=args.n_envs, rollout=args.rollout,
                     reward=args.reward, ratio=args.ratio, trade_bias=args.trade_bias,
-                    episode=args.episode or (52 if args.freq == "weekly" else 252))
+                    episode=args.episode or (52 if args.freq == "weekly" else 252),
+                    kl_coef=args.kl_coef, kl_frac=args.kl_frac,
+                    kl_updates=args.updates if args.updates < 10**9 else 1000)
     run_dir = DATA_DIR / "agent" / args.name
     log_dir = ROOT / "logs" / "agent"
     log_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     panel = build_panel(args.run, freq=args.freq, signal=args.signal,
-                        signal_seed=args.signal_seed, prior=args.prior)
+                        signal_seed=args.signal_seed, prior=args.prior, rank=args.rank)
     print(f"panel: {len(panel.dec_t)} días de decisión, {len(panel.market.symbols)} activos "
           f"({time.time() - t0:.0f} s)", flush=True)
-    resume = check_fingerprint(run_dir, {"panel": panel.fingerprint, "cfg": asdict(cfg)})
-    tr = Trainer(panel, cfg)
+    extra = {"init": args.init, "critic_warmup": args.critic_warmup} if args.init else {}
+    resume = check_fingerprint(run_dir, {"panel": panel.fingerprint, "cfg": asdict(cfg), **extra})
+    ref = None
+    if args.init:
+        init_state = torch.load(args.init, weights_only=False)["net"]
+        tr = Trainer(panel, cfg)
+        ref = copy.deepcopy(tr.net)
+        ref.load_state_dict(init_state)
+        ref.eval()
+        tr.ref_net, tr.init_state = ref, init_state
+    else:
+        tr = Trainer(panel, cfg)
     if resume:
         tr.load(run_dir / "ckpt.pt")
         print(f"reanuda en la actualización {tr.updates}", flush=True)
+    elif args.init:
+        tr.net.load_state_dict(init_state)
+        tr.opt = torch.optim.Adam(tr.net.parameters(), lr=cfg.lr)
+        if args.critic_warmup:
+            hist = warm_critic(tr, args.critic_warmup)
+            write_jsonl(log_dir / f"{args.name}_critic.jsonl", {"loss_v": hist})
+            tr.opt = torch.optim.Adam(tr.net.parameters(), lr=cfg.lr)
+        tr.save(run_dir / "ckpt.pt")
+    if args.keep_every and not (run_dir / "ckpt_u0.pt").exists():
+        tr.save(run_dir / "ckpt_u0.pt")
     log = log_dir / f"{args.name}.jsonl"
     start = time.time()
     while tr.updates < args.updates and (time.time() - start) / 60 < args.minutes:
@@ -102,6 +140,8 @@ def main() -> None:
         write_jsonl(log, row)
         if tr.updates % args.save_every == 0:
             tr.save(run_dir / "ckpt.pt")
+        if args.keep_every and tr.updates % args.keep_every == 0:
+            tr.save(run_dir / f"ckpt_u{tr.updates}.pt")
         sps = (cfg.n_envs * cfg.rollout) / (row["t_collect"] + row["t_update"])
         print(f"upd {row['update']:4d} · pasos {row['steps']:7d} · r {row['reward_mean']:+.5f} · "
               f"r−EW {row['reward_rel_mean']:+.5f} · "
