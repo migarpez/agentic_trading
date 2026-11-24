@@ -72,13 +72,17 @@ def manual_fold(samples: pd.DataFrame, k: int, train_years: list[tuple[int, int]
             "train_n": n, "subsample_seed": seed if n is not None else None}
 
 
-def walk_forward_years(samples: pd.DataFrame) -> list[dict]:
+def walk_forward_years(samples: pd.DataFrame, years=None, split: str = "test") -> list[dict]:
     """Test: para cada año, entrenar con todo lo anterior (targets ≥ 20 velas antes del 1 de
-    enero) y predecir ese año. Solo se usa al abrir el test."""
-    start, end = (pd.Timestamp(x) for x in SPLITS["test"])
-    test = split_mask(samples, "test")
+    enero) y predecir ese año. Solo se usa al abrir el test.
+
+    years y split (23-11-2026, ensayo general de scripts/test_run.py): los años que se predicen y
+    el bloque de donde salen sus muestras (p. ej. 2016–2019 de "dev"); por defecto, todos los
+    años del test."""
+    start, end = (pd.Timestamp(x) for x in SPLITS[split])
+    test = split_mask(samples, split)
     out = []
-    for year in range(start.year, end.year + 1):
+    for year in (years if years is not None else range(start.year, end.year + 1)):
         a = pd.Timestamp(f"{year}-01-01")
         b = min(pd.Timestamp(f"{year}-12-31"), end)
         train = (samples["target_end"] < a - GAP).to_numpy()

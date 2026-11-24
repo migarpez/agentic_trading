@@ -38,10 +38,11 @@ _PANELS: dict = {}
 def panel_for(fp: dict):
     p = fp["panel"]
     key = (p["run"], p.get("freq", "daily"), p.get("signal"), p.get("signal_seed", 0),
-           p.get("prior", "mu5"), p.get("rank", False))
+           p.get("prior", "mu5"), p.get("rank", False), p.get("train_end"))
     if key not in _PANELS:
         _PANELS[key] = build_panel(key[0], freq=key[1], signal=key[2], signal_seed=key[3],
-                                   prior=key[4], rank=key[5])
+                                   prior=key[4], rank=key[5],
+                                   **({"train_end": key[6]} if key[6] else {}))
     return _PANELS[key]
 
 

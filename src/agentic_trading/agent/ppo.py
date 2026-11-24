@@ -40,7 +40,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from agentic_trading.agent.data import TRAIN_END, Panel
+from agentic_trading.agent.data import Panel
 from agentic_trading.agent.env import TradingEnv
 from agentic_trading.agent.policy import (
     AgentNet,
@@ -94,8 +94,8 @@ class Trainer:
                             trade_bias=cfg.trade_bias)
         self.ref_net = ref_net
         self.opt = torch.optim.Adam(self.net.parameters(), lr=cfg.lr)
-        k_lo, k_hi = panel.k_range(panel.dec_dates[0], TRAIN_END)
-        self.k_lo, self.k_hi = k_lo, k_hi - 1 - cfg.episode   # el último paso acaba ≤ 2015
+        k_lo, k_hi = panel.k_range(panel.dec_dates[0], panel.train_end)
+        self.k_lo, self.k_hi = k_lo, k_hi - 1 - cfg.episode   # el último paso acaba ≤ train_end
         assert self.k_hi > self.k_lo, "entrenamiento demasiado corto para un episodio"
         self.rngs = [np.random.default_rng([cfg.seed, i]) for i in range(cfg.n_envs)]
         self.envs = [TradingEnv(panel, self.rules, cfg.episode) for _ in range(cfg.n_envs)]

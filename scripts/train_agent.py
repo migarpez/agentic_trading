@@ -21,6 +21,8 @@ penalización KL (--kl-coef, --kl-frac; baja hasta 0 en esa fracción de --updat
 el crítico N iteraciones antes de la primera actualización. --keep-every guarda además
 ckpt_u<N>.pt (y ckpt_u0.pt antes de empezar). --rank añade el rango de μ_5 a las variables.
 
+Agente final (23-11-2026, scripts/agent_final.py): --train-end 2019-12-31 entrena con 2000–2019.
+
 Uso: python scripts/train_agent.py --name smoke --gamma 0.95 --seed 0 --minutes 30 --eval
 """
 
@@ -93,6 +95,8 @@ def main() -> None:
     ap.add_argument("--kl-frac", type=float, default=0.3)
     ap.add_argument("--critic-warmup", type=int, default=0)
     ap.add_argument("--keep-every", type=int, default=0)
+    ap.add_argument("--train-end", default=None,
+                    help="fin del entrenamiento (por defecto 2015-12-31; el agente final, 2019)")
     args = ap.parse_args()
 
     cfg = PPOConfig(gamma=args.gamma, seed=args.seed, n_envs=args.n_envs, rollout=args.rollout,
@@ -105,7 +109,8 @@ def main() -> None:
     log_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     panel = build_panel(args.run, freq=args.freq, signal=args.signal,
-                        signal_seed=args.signal_seed, prior=args.prior, rank=args.rank)
+                        signal_seed=args.signal_seed, prior=args.prior, rank=args.rank,
+                        **({"train_end": args.train_end} if args.train_end else {}))
     print(f"panel: {len(panel.dec_t)} días de decisión, {len(panel.market.symbols)} activos "
           f"({time.time() - t0:.0f} s)", flush=True)
     extra = {"init": args.init, "critic_warmup": args.critic_warmup} if args.init else {}

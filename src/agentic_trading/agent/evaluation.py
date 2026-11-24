@@ -52,27 +52,53 @@ def rule_order(obs: Obs, rules: Rules, n: int = 20, exit_rank: int = 60,
 
 
 def run_rule(panel: Panel, start, end, rules: Rules, **kw) -> dict:
+    res = run_orders(panel, start, end, rules, lambda obs, env: rule_order(obs, rules, **kw))
+    return {k: float(v) for k, v in performance(res).items()}
+
+
+def run_orders(panel: Panel, start, end, rules: Rules, order_fn):
+    """Simula en el entorno del agente una política fija order_fn(obs, env) → orden (la de
+    TradingEnv.step_order) entre start y end, y devuelve el Result diario (NAV e importe
+    operado)."""
     k0, k1 = panel.k_range(start, end)
     env = TradingEnv(panel, rules, n_steps=k1 - 1 - k0)
     env.record = True
     obs = env.reset(k0)
     days, done = [(panel.dec_t[k0], 1.0, 0.0)], False
     while not done:
-        obs, _, done, info = env.step_order(rule_order(obs, rules, **kw))
+        obs, _, done, info = env.step_order(order_fn(obs, env))
         days += info["days"]
-    return _perf(panel, days)
+    return _result(panel, days)
 
 
-def _perf(panel: Panel, days) -> dict:
+def kelly_order(obs: Obs, env: TradingEnv, rules: Rules) -> dict:
+    """Orden de la regla tipo Kelly (baselines.kelly_weights, §11.4) en el entorno del agente:
+    pesos ∝ max(μ_5, 0)/σ_5² en retornos (Panel.raw), con la regla del 1 %, sobre el peso que no
+    ocupan las posiciones sin predicción; se venden las que quedan fuera; stop en d_max."""
+    import pandas as pd
+
+    from agentic_trading.agent.baselines import kelly_weights
+    raw = env.p.raw[env.k]
+    w = kelly_weights(pd.Series(raw[:, 0]), pd.Series(raw[:, 1])).to_numpy()
+    w = w * (1 - obs.room_kept)
+    keep = np.flatnonzero(w > 0)
+    sell = np.flatnonzero(obs.held & (w <= 0))
+    idx = np.r_[keep, sell].astype(int)
+    ww = np.r_[w[keep], np.zeros(len(sell))]
+    d = max_stop_distance(ww[:len(keep)], rules)
+    return {"je": obs.elig[idx], "w": ww, "cand": obs.elig[keep], "d": d,
+            "cash": 1 - ww.sum(), "n_trade": len(idx)}
+
+
+def _result(panel: Panel, days):
     import pandas as pd
 
     from agentic_trading.agent.simulator import Result
     t, nav, traded = map(np.array, zip(*days))
     idx = panel.market.dates[t]
     z = pd.Series(0.0, index=idx)
-    res = Result(pd.Series(nav, index=idx), pd.Series(traded, index=idx), z, z, z,
-                 pd.DataFrame(columns=["date", "symbol", "price", "how"]))
-    return {k: float(v) for k, v in performance(res).items()}
+    return Result(pd.Series(nav, index=idx), pd.Series(traded, index=idx), z, z, z,
+                  pd.DataFrame(columns=["date", "symbol", "price", "how"]))
 
 
 def ew_annual(panel: Panel, start, end) -> float:
@@ -115,3 +141,7 @@ def paired(a: list[dict], b: list[dict], key: str) -> tuple[float, float, float]
     d = np.array([x[key] - y[key] for x, y in zip(a, b)])
     se = d.std(ddof=1) / np.sqrt(len(d))
     return float(d.mean()), float(se), float(d.mean() / se) if se > 0 else float("nan")
+
+
+def _perf(panel: Panel, days) -> dict:
+    return {k: float(v) for k, v in performance(_result(panel, days)).items()}

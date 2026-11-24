@@ -64,6 +64,8 @@ class Panel:
     norm: dict                  # media y desviación típica de las variables (entrenamiento)
     fingerprint: dict
     ew_logret: np.ndarray | None = None     # [n_dec]; el último, NaN
+    train_end: pd.Timestamp = TRAIN_END     # fin del entrenamiento (episodios de PPO y clonado)
+    raw: list[np.ndarray] | None = None     # por día: [n_elig, 2] μ_5 y σ_5 en retornos (Kelly)
 
     def k_range(self, start, end) -> tuple[int, int]:
         """Índices [k0, k1) de los días de decisión entre start y end (incluidos)."""
@@ -80,9 +82,10 @@ def file_hash(paths) -> str:
     return h.hexdigest()
 
 
-def load_predictions(data: WindowData, run: str) -> tuple[pd.DataFrame, dict]:
+def load_predictions(data: WindowData, run: str, end=END, pattern: str = "cv[0-9].parquet"
+                     ) -> tuple[pd.DataFrame, dict]:
     pdir = DATA_DIR / "predictions" / run
-    paths = sorted(pdir.glob("cv[0-9].parquet"))
+    paths = sorted(pdir.glob(pattern))
     if not paths:
         raise SystemExit(f"No hay predicciones de {run}")
     pr = pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
@@ -90,7 +93,7 @@ def load_predictions(data: WindowData, run: str) -> tuple[pd.DataFrame, dict]:
     pr["date"] = smp["date"].to_numpy()
     pr["asset"] = smp["asset"].to_numpy()
     pr["sigma_v"] = np.asarray(data.arr["sigma"])[smp["row"].to_numpy()].astype(float)
-    pr = pr[pr["date"] <= END]
+    pr = pr[pr["date"] <= pd.Timestamp(end)]
     cfg = json.loads((pdir / "config.json").read_text())
     fp = {"run": run, "predictions_sha256": file_hash(paths), "members": cfg.get("members"),
           "dataset": dataset_id(data.meta)}
@@ -109,18 +112,35 @@ def synthetic_signal(y: np.ndarray, dates: np.ndarray, rho: float, seed: int) ->
 def build_panel(run: str = "final20", data: WindowData | None = None,
                 symbols_limit: int | None = None, freq: str = "daily",
                 signal: float | None = None, signal_seed: int = 0,
-                prior: str = "mu5", rank: bool = False) -> Panel:
+                prior: str = "mu5", rank: bool = False, train_end=TRAIN_END, end=END,
+                pattern: str = "cv[0-9].parquet", norm: dict | None = None) -> Panel:
     """Panel de 2000–2019 (ver el docstring del módulo). symbols_limit: solo para pruebas.
     freq: "daily" o "weekly"; signal: ρ de la señal sintética (None: las predicciones);
     prior: "mu5" o "none" (z_mu5 = 0). rank (23-11-2026, clonado de la regla fija): añade al
     final de las variables el puesto de μ_5 entre los activos del día (0 = el mayor) / 60, con
-    tope 5, sin estandarizar (la regla fija vende al salir de los 60 primeros)."""
+    tope 5, sin estandarizar (la regla fija vende al salir de los 60 primeros).
+
+    Preparación del test (23-11-2026): train_end, fin del entrenamiento del agente (la
+    normalización de las variables y los episodios de PPO y del clonado; por defecto 2015); end,
+    último día del panel y del mercado; pattern, los ficheros de predicciones de la ejecución
+    (p. ej. "wf[0-9][0-9][0-9][0-9].parquet", el walk-forward de scripts/test_run.py); norm, la
+    normalización dada (la del entrenamiento del agente) en vez de calcularla. Con los valores
+    por defecto, la huella no cambia."""
     assert freq in ("daily", "weekly") and prior in ("mu5", "none")
     data = data or WindowData(DATA_DIR / "dataset")
-    pr, fp = load_predictions(data, run)
+    train_end, end = pd.Timestamp(train_end), pd.Timestamp(end)
+    pr, fp = load_predictions(data, run, end, pattern)
     fp = {**fp, "freq": freq, "signal": signal, "signal_seed": signal_seed, "prior": prior}
     if rank:
         fp["rank"] = True
+    if train_end != TRAIN_END:
+        fp["train_end"] = str(train_end.date())
+    if end != END:
+        fp["end"] = str(end.date())
+    if pattern != "cv[0-9].parquet":
+        fp["pattern"] = pattern
+    if norm is not None:
+        fp["norm"] = "given"
     if signal is not None:
         rows = data.samples["row"].to_numpy()[pr["sample"].to_numpy()]
         for i, h in enumerate(H):
@@ -136,7 +156,7 @@ def build_panel(run: str = "final20", data: WindowData | None = None,
     clean = DATA_DIR / "clean"
     start = pr["date"].min() - pd.Timedelta(days=10)
     market = Market.from_frames({s: pd.read_parquet(clean / f"{s}.parquet") for s in names},
-                                start=start, end=END)
+                                start=start, end=end)
     col = {a: j for j, a in enumerate(assets)}
     pr = pr.assign(j=pr["asset"].map(col))
     for h in H:
@@ -147,9 +167,13 @@ def build_panel(run: str = "final20", data: WindowData | None = None,
     if freq == "weekly":
         days = days.intersection(weekly_dates(pr["date"]))
     pr = pr[pr["date"].isin(days)]
-    train = pr["date"] <= TRAIN_END
-    mean = pr.loc[train, BASE_FEATURES].mean()
-    sd = pr.loc[train, BASE_FEATURES].std()
+    if norm is None:
+        train = pr["date"] <= train_end
+        mean = pr.loc[train, BASE_FEATURES].mean()
+        sd = pr.loc[train, BASE_FEATURES].std()
+    else:
+        mean = pd.Series(norm["mean"])[BASE_FEATURES]
+        sd = pd.Series(norm["sd"])[BASE_FEATURES]
     X = ((pr[BASE_FEATURES] - mean) / sd).to_numpy(np.float32)
     mu5 = pr["mu_5"].to_numpy()
     g = pr.groupby("date")["mu_5"]
@@ -165,7 +189,9 @@ def build_panel(run: str = "final20", data: WindowData | None = None,
     bounds = np.searchsorted(dsorted, days.to_numpy())
     bounds = np.r_[bounds, len(order)]
     jj = pr["j"].to_numpy()
-    elig, feats, zs = [], [], []
+    raw_all = np.c_[pr["mu_5"].to_numpy() * pr["sigma_v"].to_numpy(),
+                    pr["sigma_5"].to_numpy() * pr["sigma_v"].to_numpy()]
+    elig, feats, zs, raws = [], [], [], []
     for k in range(len(days)):
         rows = order[bounds[k]:bounds[k + 1]]
         rows = rows[np.argsort(jj[rows], kind="stable")]
@@ -177,11 +203,12 @@ def build_panel(run: str = "final20", data: WindowData | None = None,
             f = np.c_[f, np.minimum(r / 60.0, 5.0)].astype(np.float32)
         feats.append(f)
         zs.append(z[rows])
+        raws.append(raw_all[rows])
     close_ffill = pd.DataFrame(market.close).ffill().to_numpy()
     norm = {"mean": mean.to_dict(), "sd": sd.to_dict()}
     dec_t = pos.astype(np.int64)
     return Panel(market, dec_t, pd.DatetimeIndex(days), elig, feats, zs, close_ffill, norm, fp,
-                 equal_weight_logret(close_ffill, dec_t, elig))
+                 equal_weight_logret(close_ffill, dec_t, elig), train_end=train_end, raw=raws)
 
 
 def equal_weight_logret(close_ffill: np.ndarray, dec_t: np.ndarray, elig: list) -> np.ndarray:

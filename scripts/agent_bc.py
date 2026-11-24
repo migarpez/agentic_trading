@@ -69,9 +69,9 @@ def clone_name(rank: bool) -> str:
     return "bc_clone_rank" if rank else "bc_clone"
 
 
-def check_clone(panel, net, rules) -> dict:
+def check_clone(panel, net, rules, periods=CHECK_PERIODS) -> dict:
     out = {"pass": True, "periods": {}}
-    for label, a, b in CHECK_PERIODS:
+    for label, a, b in periods:
         rule = run_rule(panel, a, b, rules)
         runs = policy_runs(panel, net, a, b, rules, K, range(1000, 1020))
         st = summarize(runs["stochastic"])
@@ -92,11 +92,14 @@ def check_clone(panel, net, rules) -> dict:
     return out
 
 
-def clone(rank: bool) -> dict:
+def clone(rank: bool, train_end=TRAIN_END, name: str | None = None,
+          periods=CHECK_PERIODS) -> dict:
+    """Clonado y comprobación. train_end, name y periods: para el agente final
+    (scripts/agent_final.py: 2000–2019, final_clone_rank)."""
     torch.set_num_threads(4)
-    panel = build_panel("final20", freq="weekly", rank=rank)
+    panel = build_panel("final20", freq="weekly", rank=rank, train_end=train_end)
     rules = agent_rules(COST)
-    k_lo, k_hi = panel.k_range(panel.dec_dates[0], TRAIN_END)
+    k_lo, k_hi = panel.k_range(panel.dec_dates[0], panel.train_end)
     k_hi = k_hi - 1 - EPISODE
     torch.manual_seed(0)
     net = AgentNet(n_feat=panel_n_feat(panel), trade_bias=-2.0)
@@ -111,13 +114,14 @@ def clone(rank: bool) -> dict:
         net.train()
         hist += train_bc(net, data, epochs=10, seed=rnd + 1, log=log)
     net.eval()
-    d = AG / clone_name(rank)
+    name = name or clone_name(rank)
+    d = AG / name
     d.mkdir(parents=True, exist_ok=True)
     torch.save({"net": net.state_dict(), "rank": rank, "history": hist}, d / "clone.pt")
     log("comprobación de la clonada")
-    chk = check_clone(panel, net, rules)
+    chk = check_clone(panel, net, rules, periods)
     chk["rank"], chk["n_states"] = rank, len(data)
-    (OUT / f"{clone_name(rank)}_check.json").write_text(json.dumps(chk, indent=1,
+    (OUT / f"{name}_check.json").write_text(json.dumps(chk, indent=1,
                                                                    ensure_ascii=False,
                                                                    default=float))
     return chk
@@ -142,16 +146,20 @@ def ppo_name(seed: int) -> str:
     return f"bc_ppo_s{seed}"
 
 
-def train_one(seed: int) -> int:
-    rank = chosen_rank()
+def train_one(seed: int, prefix: str = "bc_ppo", clone_dir: str | None = None,
+              rank: bool | None = None, train_end: str | None = None) -> int:
+    rank = chosen_rank() if rank is None else rank
+    name = f"{prefix}_s{seed}"
     cmd = [sys.executable, "-u", str(ROOT / "scripts" / "train_agent.py"),
-           "--name", ppo_name(seed), "--seed", str(seed), "--updates", str(UPDATES),
+           "--name", name, "--seed", str(seed), "--updates", str(UPDATES),
            "--save-every", "20", "--keep-every", str(KEEP), *PLANB,
-           "--init", str(AG / clone_name(rank) / "clone.pt"), "--kl-coef", str(KL_COEF),
-           "--kl-frac", str(KL_FRAC), "--critic-warmup", str(CRITIC_WARMUP)]
+           "--init", str(AG / (clone_dir or clone_name(rank)) / "clone.pt"), "--kl-coef",
+           str(KL_COEF), "--kl-frac", str(KL_FRAC), "--critic-warmup", str(CRITIC_WARMUP)]
     if rank:
         cmd.append("--rank")
-    with open(OUT / f"{ppo_name(seed)}.log", "a") as fh:
+    if train_end:
+        cmd += ["--train-end", train_end]
+    with open(OUT / f"{name}.log", "a") as fh:
         return subprocess.run(cmd, check=False, stdout=fh, stderr=subprocess.STDOUT, cwd=ROOT).returncode
 
 
@@ -165,19 +173,21 @@ def phase_ppo() -> bool:
 CURVE_SEEDS = range(500, 505)
 
 
-def curve_one(seed: int) -> dict:
-    """Curva de evaluación en 2000–15 de una semilla de PPO: Sharpe y rentabilidad medios de la
-    estocástica (5 semillas de muestreo) en cada checkpoint."""
+def curve_one(seed: int, prefix: str = "bc_ppo", start: str = "2000-01-01",
+              end: str = "2015-12-31") -> dict:
+    """Curva de evaluación en el entrenamiento (2000–15; el agente final, 2000–19) de una
+    semilla de PPO: Sharpe y rentabilidad medios de la estocástica (5 semillas de muestreo) en
+    cada checkpoint."""
     from scripts.agent_eval import nets, panel_for
     torch.set_num_threads(1)
-    d = AG / ppo_name(seed)
+    d = AG / f"{prefix}_s{seed}"
     fp = json.loads((d / "fingerprint.json").read_text())
     panel = panel_for(fp)
     rules = agent_rules(COST)
     out = {}
     for u in range(0, UPDATES + 1, KEEP):
         net, _ = nets(fp["cfg"], d / f"ckpt_u{u}.pt", panel_n_feat(panel))
-        runs = policy_runs(panel, net, "2000-01-01", "2015-12-31", rules, K, CURVE_SEEDS)
+        runs = policy_runs(panel, net, start, end, rules, K, CURVE_SEEDS)
         st = summarize(runs["stochastic"])
         out[u] = {"Sharpe": st["Sharpe"][0], "rentabilidad anual": st["rentabilidad anual"][0],
                   "rotación anual": st["rotación anual"][0]}
