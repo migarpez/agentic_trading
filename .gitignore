@@ -25,3 +25,9 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+
+# Notas de trabajo locales (no se publican)
+CLAUDE.md
+docs/handoff.md
+docs/historial.md
+.claude/

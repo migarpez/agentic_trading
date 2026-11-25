@@ -1,7 +1,6 @@
 # agentic_trading
 
 Modelo de ML sobre velas diarias OHLCV (TCN causal + ensemble) que alimenta a agentes de trading autónomos.
-La especificación completa está en [`docs/handoff.md`](docs/handoff.md).
 
 ## Instalación
 
